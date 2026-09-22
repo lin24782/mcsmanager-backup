@@ -2,6 +2,24 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号跟 `docs/安装说明.md` 顶部一致。
 
+## [1.1] - 2026-09-22
+
+### 修复
+
+- **导出被占用的文件不再整次失败**：服务器在跑的时候，`authlib-injector.log`、`world/session.lock` 这类文件会被 JVM 锁住，
+  原来一遇到 `EBUSY` 整次导出就中断（卡片还一直显示"正在导出…"）。现在会**重试 3 次后跳过**该文件，并在日志与导出说明里列出来
+- **任务失败时进度条不再卡住**：失败会写一个 `error` 态（卡片画红条 + 失败原因），90 秒后自动收起；
+  以前失败只打日志、不结束任务，卡片会永远显示"正在导出…"
+
+### 变更
+
+- **「整个服务端」导出改成一键三连：停服 → 复制 → 自动开服**（含存档，避免把人正在写的世界拷成半截）。
+  实测 gtl-2 全流程 10 秒。「纯净服务端」不含存档 / 日志，仍然**不用停服**（零停机，实测 5.6 秒）
+- **纯净服务端剔得更干净**：除存档目录 / logs / crash-reports / `*.log` 外，再加
+  `journeymap`（地图数据）、`serverutilities`（家园/权限）与身份类文件（`ops.json` / `whitelist.json` /
+  `usercache.json` / `usernamecache.json` / `banned-*.json`，大小写不敏感）
+- 导出的 `导出说明.txt` 里列出「已排除什么」以及开服后自己设置的几条命令（`op` / `gamerule keepInventory true` / `whitelist add`）
+
 ## [1.0] - 2026-09-22
 
 第一个公开版本。两个运行文件（`src/mc-backup.js` + `web/card-backup.html`）+ 一份说明，只依赖 Node，Windows / Linux 通用。

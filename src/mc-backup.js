@@ -16,7 +16,7 @@
     node mc-backup.js install                # 一键安装（可加 --yes / --service）
     node mc-backup.js status                 # 刷新状态文件（卡片读的那个）
     node mc-backup.js snapshot               # 给到时间的服务端各存一份
-    node mc-backup.js snapshot -i mc-1        # 只存某一个
+    node mc-backup.js snapshot -i gtl        # 只存某一个
     node mc-backup.js queue                  # 处理面板卡片发来的请求
     node mc-backup.js watch                  # 常驻：每分钟处理队列 + 到点自动存档
     node mc-backup.js list / prune / restore / export ...
@@ -1225,7 +1225,19 @@ function exportInstance(inst, snapName, opt = {}) {
   log(`  [${inst.name}] 导出完成：${dest}（${n} 个文件）`);
   return dest;
 }
-function exportServer(inst, clean) {
+async function exportServer(inst, clean) {
+  // 「整个服务端」含存档，而存档正被运行中的服务端写着 —— 先停服再拷，拷完自动开服（和回档一个套路）。
+  // 「纯净服务端」不含存档 / 日志，mods 与 config 运行期不动，就不用停服（零停机）。
+  if (!clean) {
+    return withInstanceStopped(inst, () => {
+      const dest = exportServerBody(inst, false);
+      log(`  [${inst.name}] 整个服务端导出完成（导出时已停服，现在恢复）`);
+      return dest;
+    }, false);
+  }
+  return exportServerBody(inst, true);
+}
+function exportServerBody(inst, clean) {
   const root = cfg.exportRoot;
   const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
   const tag = clean ? '纯净服务端' : '服务端';
@@ -1242,9 +1254,13 @@ function exportServer(inst, clean) {
     }
   }
   const skipTop = new Set(['backups', '_backups']);
-  const skipClean = new Set([...saveDirs, 'logs', 'crash-reports', 'serverutilities']);
-  const skipFiles = clean ? new Set(['ops.json', 'whitelist.json', 'usercache.json', 'usernamecache.json', 'banned-players.json', 'banned-ips.json']) : new Set();
+  // 纯净服务端 = 只留「换台机器就能开服」的那部分：存档目录、日志、玩家身份文件、玩家侧数据全部剔除
+  const skipClean = new Set([...saveDirs, 'logs', 'crash-reports', 'serverutilities', 'journeymap']);
+  // 玩家身份 / 管理员权限类文件（大小写不敏感，banned-* 一网打尽）
+  const isIdentityFile = f => /^(ops|whitelist|usercache|usernamecache|banned-players|banned-ips)\.json$/i.test(f)
+    || /^banned-.*\.json$/i.test(f) || /\.banlist$/i.test(f);
   let n = 0;
+  const skipped = [];
   const walk = (srcDir, dstDir, rel) => {
     for (const it of fs.readdirSync(srcDir, { withFileTypes: true })) {
       const relPath = rel ? rel + '/' + it.name : it.name;
@@ -1255,25 +1271,51 @@ function exportServer(inst, clean) {
         mkdirp(path.join(dstDir, it.name));
         walk(path.join(srcDir, it.name), path.join(dstDir, it.name), relPath);
       } else {
-        if (clean && skipFiles.has(it.name)) continue;
-        fs.copyFileSync(path.join(srcDir, it.name), path.join(dstDir, it.name)); n++;
+        if (clean && isIdentityFile(it.name)) continue;
+        // 纯净服务端不带日志文件（服务器还在跑的时候这些常被 JVM 锁住）
+        if (clean && /\.log$/i.test(it.name)) continue;
+        const s = path.join(srcDir, it.name), d = path.join(dstDir, it.name);
+        let done = false;
+        for (let i = 0; i < 3 && !done; i++) {
+          try { fs.copyFileSync(s, d); done = true; }
+          catch (e) {
+            if (i === 2) {
+              // 服务器在跑时个别文件（日志/锁文件）会被占用：跳过它，别让整次导出白费
+              skipped.push(relPath + '（' + (e.code || e.message) + '）');
+              log(`  [${inst.name}] 导出跳过被占用的文件：${relPath}（${e.code || e.message}）`, 'WARN');
+            } else {
+              require('child_process').execSync(process.platform === 'win32' ? 'ping -n 2 127.0.0.1 > nul' : 'sleep 1');
+            }
+          }
+        }
+        if (done) n++;
         if (n % 100 === 0) stepTask(n);
       }
     }
   };
   beginTask('export', inst, countFiles(inst.dir), clean ? '正在导出纯净服务端…' : '正在导出整个服务端…');
   walk(inst.dir, dest, '');
-  endTask((clean ? '纯净服务端' : '整个服务端') + '导出完成（' + n + ' 个文件）');
+  endTask((clean ? '纯净服务端' : '整个服务端') + '导出完成（' + n + ' 个文件'
+    + (skipped.length ? '，跳过 ' + skipped.length + ' 个被占用的文件' : '') + '）');
   const lines = ['Minecraft 服务端导出', `实例: ${inst.name}`, `原目录: ${inst.dir}`,
     `导出时间: ${new Date().toLocaleString('sv-SE')}`];
   if (clean) {
     lines.push('类型: 纯净服务端（不含存档 / 玩家数据）', '已排除:', '  - 存档目录 ' + (saveDirs.join('、') || '（无）'),
-      '  - logs / crash-reports（含玩家名字和 IP）', '  - serverutilities（家园/传送点/权限）',
-      '  - ops.json / whitelist.json / usercache.json / usernamecache.json / banned-*.json');
+      '  - logs / crash-reports / *.log（含玩家名字和 IP）',
+      '  - serverutilities（家园/传送点/权限）、journeymap（地图数据）',
+      '  - ops.json / whitelist.json / usercache.json / usernamecache.json / banned-*.json（管理员与玩家身份）',
+      '',
+      '开服后按需自己设置（这些属于「服务器自己的配置」，所以没带过来）：',
+      '  - 当管理员：控制台执行  op 你的名字',
+      '  - 死亡不掉落：控制台执行  gamerule keepInventory true',
+      '  - 白名单：控制台执行  whitelist add 名字  （并改 server.properties 里 white-list=true）');
   }
   lines.push('', '用法：整份拷到目标机器，装好对应 Java，执行里面的启动脚本即可。');
+  if (skipped.length) {
+    lines.push('', '跳过（导出时被占用，通常是服务端还在跑）：', ...skipped.slice(0, 20).map(x => '  - ' + x));
+  }
   fs.writeFileSync(path.join(dest, '导出说明.txt'), lines.join(os.EOL), 'utf8');
-  log(`  [${inst.name}] ${tag}导出完成：${dest}（${n} 个文件）`);
+  log(`  [${inst.name}] ${tag}导出完成：${dest}（${n} 个文件${skipped.length ? '，跳过 ' + skipped.length + ' 个' : ''}）`);
   return dest;
 }
 
@@ -1316,6 +1358,17 @@ function endTask(message) {
   // unref：同上，完成态保留 90 秒只是给面板看的，不该拖住一次性进程的退出
   const clearDone = setTimeout(() => { if (task && task.task === 'done') { task = null; writeProgress(); } }, 90000);
   if (clearDone.unref) clearDone.unref();
+}
+// 失败也要把进度收尾：写一个 error 态（卡片画红条），否则进度条会一直显示"正在导出…"
+function failTask(message) {
+  if (!task) return;
+  if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+  const t = task;
+  task = { task: 'error', instance: t.instance, total: t.total, done: t.done, percent: t.percent,
+    startedAt: t.startedAt, updatedAt: Date.now(), message: message || '执行失败' };
+  writeProgress();
+  const clearErr = setTimeout(() => { if (task && task.task === 'error') { task = null; writeProgress(); } }, 90000);
+  if (clearErr.unref) clearErr.unref();
 }
 function writeProgress() {
   try {
@@ -1591,8 +1644,8 @@ async function processQueue() {
         } else if (req.startsWith('exportplayer-')) {
           const p = req.split('~');
           await exportInstance(inst, p[2] || 'latest', { world: b64uDecode(p[0].slice('exportplayer-'.length)), player: b64uDecode(p[1]) });
-        } else if (req === 'exportserver') exportServer(inst, false);
-        else if (req === 'exportserver-clean') exportServer(inst, true);
+        } else if (req === 'exportserver') await exportServer(inst, false);
+        else if (req === 'exportserver-clean') await exportServer(inst, true);
         else if (req.startsWith('delsnap-')) {
           const name = req.slice('delsnap-'.length);
           const snaps = snapshotList(inst);
@@ -1627,7 +1680,7 @@ async function processQueue() {
             rmrf(stage);
           }
         } else { log(`未知请求: ${req}`, 'WARN'); ok = false; }
-      } catch (e) { log(`请求执行失败: ${e.message}`, 'ERROR'); ok = false; }
+      } catch (e) { log(`请求执行失败: ${e.message}`, 'ERROR'); failTask('执行失败：' + e.message); ok = false; }
       const doneDir = path.join(dir, 'done');
       mkdirp(doneDir);
       try {

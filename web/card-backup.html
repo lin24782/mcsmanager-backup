@@ -63,6 +63,7 @@
     .mbc-card .mbc-progress-bar { height: 8px; border-radius: 5px; background: rgba(128,128,128,.25); overflow: hidden; }
     .mbc-card .mbc-progress-fill { height: 100%; width: 0%; background: #1677ff; transition: width .3s; }
     .mbc-card .mbc-progress-fill.done { background: #16a34a; }
+    .mbc-card .mbc-progress-fill.error { background: #d93025; }
     .mbc-card .mbc-settings { margin: 6px 0 8px; padding: 6px 8px; border: 1px dashed rgba(128,128,128,.45); border-radius: 8px; }
     .mbc-card .mbc-settings .mbc-sel { margin: 5px 0; }
     .mbc-card .mbc-tier-row { display: flex; align-items: center; gap: 6px; margin: 5px 0; font-size: 12px; }
@@ -110,11 +111,11 @@
     </div>
     <div class="mbc-sel">
       <span class="mbc-lab">存档位置</span>
-      <input id="mbc-backup-root" style="flex:3" placeholder="D:\MC\_backups">
+      <input id="mbc-backup-root" style="flex:3" placeholder="E:\MC\_backups">
     </div>
     <div class="mbc-sel">
       <span class="mbc-lab">导出位置</span>
-      <input id="mbc-export-root" style="flex:3" placeholder="D:\MC\_backups\_exports">
+      <input id="mbc-export-root" style="flex:3" placeholder="E:\MC\_backups\_exports">
     </div>
     <div class="mbc-sel">
       <span class="mbc-lab" title="面板里改这个就会停用自动补 GTNH 目录">备份内容</span>
@@ -260,7 +261,7 @@
   // ---- 进度条：引擎把当前任务进度写到状态文件旁边的 mcbackup-progress.json ----
   var PROGRESS_URL = '/upload_files/mcbackup-progress.json';
   var progTimer = null, progWatchUntil = 0, progDoneMark = '', progReloading = false;
-  function progressRunning(p) { var t = p && p.task; return !!(t && t !== 'idle' && t !== 'done'); }
+  function progressRunning(p) { var t = p && p.task; return !!(t && t !== 'idle' && t !== 'done' && t !== 'error'); }
   function stopProgressWatch() { if (progTimer) { clearInterval(progTimer); progTimer = null; } }
   // 提交任务后先盯一段时间：队列最多 1 分钟才执行，0.4 秒的增量任务也能被看到
   function startProgressWatch(seconds) {
@@ -277,10 +278,11 @@
     }
     box.style.display = '';
     var finished = (p.task === 'done');
-    var pct = finished ? 100 : (p.percent || 0);
+    var failed = (p.task === 'error');
+    var pct = (finished || failed) ? 100 : (p.percent || 0);
     var txt = (p.instance ? '[' + p.instance + '] ' : '') + (p.message || p.task);
-    if (finished) {
-      txt = '✔ ' + txt;
+    if (finished || failed) {
+      txt = (failed ? '✖ ' : '✔ ') + txt;
     } else {
       if (p.total > 0) { txt += '　' + p.done + '/' + p.total + '（' + pct + '%）'; }
       else if (p.done > 0) { txt += '　已处理 ' + p.done + ' 个文件'; }
@@ -288,8 +290,9 @@
     }
     q('#mbc-progress-label').textContent = txt;
     var fill = q('#mbc-progress-fill');
-    fill.style.width = (finished ? 100 : (p.total > 0 ? Math.max(2, pct) : 100)) + '%';
-    fill.className = 'mbc-progress-fill' + ((finished || (p.total > 0 && pct >= 100)) ? ' done' : '');
+    fill.style.width = ((finished || failed) ? 100 : (p.total > 0 ? Math.max(2, pct) : 100)) + '%';
+    fill.className = 'mbc-progress-fill'
+      + (failed ? ' error' : ((finished || (p.total > 0 && pct >= 100)) ? ' done' : ''));
   }
   function pollProgress() {
     return fetch(PROGRESS_URL + '?t=' + Date.now(), { credentials: 'same-origin' })
@@ -870,8 +873,8 @@
       pdSel.disabled = !showPd;
       if (!showPd) { pdSel.value = 'all'; }
       q('#mbc-export-tip').textContent = '导出到 ' + exportRoot() + '（复制一份，不动线上）'
-        + (kindSel.value === 'server' ? '　·　整个服务端 = 实例目录整份（不含它自己的 backups）' : '')
-        + (kindSel.value === 'serverclean' ? '　·　纯净服务端 = 不带存档 / 日志 / 玩家身份文件' : '');
+        + (kindSel.value === 'server' ? '　·　整个服务端 = 实例目录整份（含存档，会先停服再导，导完自动开服）' : '')
+        + (kindSel.value === 'serverclean' ? '　·　纯净服务端 = 不带存档 / 日志 / 玩家身份文件（不用停服）' : '');
     }
     kindSel.addEventListener('change', sync);
     pdSel.addEventListener('change', sync);
@@ -902,6 +905,8 @@
       var modeTxt = (kind === 'server' || kind === 'serverclean') ? '' : ('（' + ({ all: '带全部玩家数据', none: '不带玩家数据', one: '只带玩家 ' + key }[mode] || '') + '）');
       if (!confirm('导出「' + curInst().name + '」的 ' + label + modeTxt + '？\n'
         + ((kind === 'server' || kind === 'serverclean') ? '来源：线上实例目录' : '来源：快照 ' + snap) + '\n'
+        + (kind === 'server' ? '注意：这一份含存档，会先自动停服（避免把人正在写的世界拷成半截），导完自动开服。\n' : '')
+        + (kind === 'serverclean' ? '纯净服务端不含存档 / 日志，不用停服。\n' : '')
         + '导出到：' + exportRoot() + '\\...\n导出只是复制一份，不动线上；大存档可能要几分钟。')) { return; }
       submit(name, '导出 ' + label);
     });
