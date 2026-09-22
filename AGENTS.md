@@ -77,5 +77,6 @@ node tests/retention-test.js   # 时间段锚点 vs 旧算法对比
 
 ## 版本与发布
 
-- 用户侧版本号写在 `docs/安装说明.md` 顶部（现在是 `版本 1.0`），加了功能或修了 bug 就 +0.1，并往 `CHANGELOG.md` 顶部加一节
+- 用户侧版本号写在 `docs/安装说明.md` 顶部（现在是 `版本 1.001`）：**每改一次 +0.001**（1.001 → 1.002 → …），
+  并往 `CHANGELOG.md` 顶部加一节；发布包名跟版本号一致（`mcsmanager-backup-v1.00X.zip`）
 - 发布包 = `src/mc-backup.js` + `web/card-backup.html` + `docs/安装说明.md` 三个文件（用户只要这三个）

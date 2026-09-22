@@ -2,7 +2,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号跟 `docs/安装说明.md` 顶部一致。
 
-## [1.1] - 2026-09-22
+## [1.001] - 2026-09-22
 
 ### 修复
 
