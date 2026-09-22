@@ -1,0 +1,40 @@
+# 运行时生成的东西（不要提交）
+mc-backup-config.json
+mc-backup.log
+mc-backup.log.*
+*.log
+mc-backup-progress.json
+mc-backup-status.json
+mcchunk-history-*.json
+
+# 备份 / 导出产物
+_backups/
+_exports/
+_manual/
+_queue/
+_incparts/
+backups/
+exports/
+
+# 快照目录（万一在仓库目录里跑过）
+???????-??????_full/
+???????-??????_hardlink/
+???????-??????_inc/
+*.tmp/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Node
+node_modules/
+npm-debug.log*
+
+# 测试临时产物
+mbc-sandbox-*/
+mbc-chain-*/
+mbc-sandbox-result.json
+zipcheck-*/

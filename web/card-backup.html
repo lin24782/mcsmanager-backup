@@ -1,0 +1,1187 @@
+<!--
+  MCSManager 自定义卡片：多服务端存档备份
+  功能：选服务端 → 立即存档 / 回档到最新 / 回档到选中
+        左边下拉选「世界/维度」或「玩家存档」，右边下拉选具体哪一份存档（快照），可单独回档这个目标
+        玩家数据转移：把 A 玩家的存档整套给 B 玩家（新玩家也行，填 uuid 或名字）
+  原理：状态读静态文件 /upload_files/mcbackup-status.json（由备份脚本生成）；
+        操作往请求队列写空文件，再由 MCSManager-BackupQueue 任务（每分钟）执行
+        队列文件名里带中文会顶到 Windows 路径长度上限，所以文字部分一律 base64url 编码
+  上传方式：面板 → 右上角自定义布局 → 添加 → 扩展页面卡片（本卡片由 panel-install-card.ps1 自动安装）
+-->
+<div id="mbc-root" class="mbc-card">
+  <style>
+    .mbc-card { font-size: 13px; line-height: 1.5; max-height: 100%; overflow: auto; }
+    .mbc-card .mbc-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .mbc-card .mbc-title { font-weight: 600; }
+    .mbc-card .mbc-sel { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; align-items: center; }
+    .mbc-card .mbc-block { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0;
+      border-bottom: 1px dashed rgba(128,128,128,.2); }
+    .mbc-card .mbc-block > .mbc-lab { min-width: 52px; }
+    .mbc-card .mbc-block select { flex: 1 1 210px; min-width: 0; }
+    .mbc-card .mbc-block .mbc-wide { flex-basis: 100%; }
+    .mbc-card .mbc-lab { font-size: 12px; opacity: .7; white-space: nowrap; }
+    .mbc-card select { flex: 1 1 130px; padding: 4px 6px; border-radius: 6px; border: 1px solid rgba(128,128,128,.45);
+      background: transparent; color: inherit; font-size: 13px; min-width: 0; text-overflow: ellipsis; }
+    .mbc-card .mbc-sum { margin: 6px 0; opacity: .85; }
+    .mbc-card .mbc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+    .mbc-card button { padding: 5px 12px; border-radius: 6px; border: 1px solid rgba(128,128,128,.45);
+      background: transparent; color: inherit; cursor: pointer; font-size: 13px; }
+    .mbc-card button:hover { border-color: #1677ff; color: #1677ff; }
+    .mbc-card button.mbc-primary { background: #1677ff; border-color: #1677ff; color: #fff; }
+    .mbc-card button.mbc-primary:hover { opacity: .88; color: #fff; }
+    .mbc-card button.mbc-warn:hover { border-color: #d97706; color: #d97706; }
+    .mbc-card button.mbc-danger { border-color: #d93025; color: #ff7875; }
+    .mbc-card button.mbc-danger:hover { background: #d93025; color: #fff; border-color: #d93025; }
+    .mbc-card .mbc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 4px 0; border-bottom: 1px dashed rgba(128,128,128,.2); }
+    .mbc-card .mbc-row > span:first-child { opacity: .7; white-space: nowrap; }
+    .mbc-card .mbc-row > span:last-child { text-align: right; word-break: break-all; }
+    .mbc-card .mbc-tag { display: inline-block; min-width: 34px; text-align: center; padding: 0 5px; border-radius: 4px;
+      font-size: 11px; border: 1px solid rgba(128,128,128,.5); margin-right: 6px; }
+    .mbc-card .mbc-tag.full { color: #16a34a; border-color: #16a34a; }
+    .mbc-card .mbc-tag.inc { color: #d97706; border-color: #d97706; }
+    .mbc-card .mbc-hint { margin-top: 6px; font-size: 12px; opacity: .7; word-break: break-all; }
+    .mbc-card .mbc-off { color: #d97706; }
+    .mbc-card .mbc-xfer { margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(128,128,128,.25); }
+    .mbc-card .mbc-xtitle { font-weight: 600; margin-bottom: 2px; }
+    .mbc-card #mbc-xfer-btn { font-weight: 600; }
+    .mbc-card .mbc-adv { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(128,128,128,.25); }
+    .mbc-card .mbc-adv #mbc-adv-body { margin-top: 6px; padding: 6px 9px; border: 1px dashed rgba(128,128,128,.35);
+      border-radius: 8px; }
+    .mbc-card .mbc-xtip { font-size: 12px; opacity: .7; margin-top: 4px; }
+    .mbc-card .mbc-target-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      margin: 4px 0; padding-bottom: 3px; border-bottom: 1px inset rgba(128,128,128,.2); font-weight: 600; }
+    .mbc-card .mbc-coord { width: 72px; padding: 3px 5px; border-radius: 6px; border: 1px solid rgba(128,128,128,.45);
+      background: transparent; color: inherit; font-size: 13px; }
+    .mbc-card .mbc-chline { font-size: 12px; opacity: .8; margin: 4px 0; word-break: break-all; }
+    .mbc-card .mbc-chrow { display: flex; justify-content: space-between; gap: 8px; font-size: 12px;
+      padding: 1px 0; border-bottom: 1px dotted rgba(128,128,128,.18); }
+    .mbc-card .mbc-chrow > span:last-child { text-align: right; word-break: break-all; }
+    .mbc-card .mbc-dim { opacity: .65; }
+    .mbc-card .mbc-progress { margin: 6px 0; }
+    .mbc-card .mbc-progress-label { font-size: 12px; opacity: .9; margin-bottom: 3px; word-break: break-all; }
+    .mbc-card .mbc-progress-bar { height: 8px; border-radius: 5px; background: rgba(128,128,128,.25); overflow: hidden; }
+    .mbc-card .mbc-progress-fill { height: 100%; width: 0%; background: #1677ff; transition: width .3s; }
+    .mbc-card .mbc-progress-fill.done { background: #16a34a; }
+    .mbc-card .mbc-settings { margin: 6px 0 8px; padding: 6px 8px; border: 1px dashed rgba(128,128,128,.45); border-radius: 8px; }
+    .mbc-card .mbc-settings .mbc-sel { margin: 5px 0; }
+    .mbc-card .mbc-tier-row { display: flex; align-items: center; gap: 6px; margin: 5px 0; font-size: 12px; }
+    .mbc-card .mbc-tier-row input { width: 62px; }
+    .mbc-card select.mbc-dur { flex: 0 0 auto; width: auto; min-width: 92px; padding: 3px 5px; font-size: 12px; }
+    .mbc-card .mbc-settings input.mbc-coord { width: 62px; }
+  </style>
+
+  <div class="mbc-top">
+    <span class="mbc-title">存档备份</span>
+    <span><span class="mbc-lab" id="mbc-clock" title="这台机器（面板所在电脑）的当前时间"></span>
+      <button id="mbc-settings-btn">设置</button> <button id="mbc-refresh">刷新</button></span>
+  </div>
+  <div class="mbc-sel">
+    <select id="mbc-inst"></select>
+    <button id="mbc-toggle">开启备份</button>
+  </div>
+  <div class="mbc-sum" id="mbc-sum">读取中…</div>
+  <div class="mbc-progress" id="mbc-progress" style="display:none">
+    <div class="mbc-progress-label" id="mbc-progress-label"></div>
+    <div class="mbc-progress-bar"><div class="mbc-progress-fill" id="mbc-progress-fill"></div></div>
+  </div>
+  <div class="mbc-actions">
+    <select id="mbc-snap-kind" style="flex:1 1 230px" title="增量保存：把变化写进最近那份手动档（不会多出一份）；全部保存：另起一份独立的完整复制，可以单独拿走">
+      <option value="inc">增量保存（写进最近的手动档）</option>
+      <option value="full">全部保存（完整一份）</option>
+    </select>
+    <button class="mbc-primary" id="mbc-snap">立刻保存</button>
+    <button id="mbc-restore-latest" title="把整个服务端还原到最新那份快照">还原到最新</button>
+  </div>
+
+  <!-- 设置：存档间隔 + 分档保留（时间差存档） -->
+  <div class="mbc-settings" id="mbc-settings" style="display:none">
+    <div class="mbc-xtitle">存档设置</div>
+    <div class="mbc-sel">
+      <span class="mbc-lab">设置对象</span>
+      <select id="mbc-scope" style="flex:1 1 200px"></select>
+      <button id="mbc-scope-reset" style="display:none">改回跟随全局</button>
+    </div>
+    <div class="mbc-xtip" id="mbc-scope-tip"></div>
+    <div class="mbc-sel">
+      <span class="mbc-lab">存档间隔</span>
+      <select class="mbc-dur" id="mbc-base-min"></select>
+      <span class="mbc-lab">存一次</span>
+    </div>
+    <div class="mbc-sel">
+      <span class="mbc-lab">存档位置</span>
+      <input id="mbc-backup-root" style="flex:3" placeholder="D:\MC\_backups">
+    </div>
+    <div class="mbc-sel">
+      <span class="mbc-lab">导出位置</span>
+      <input id="mbc-export-root" style="flex:3" placeholder="D:\MC\_backups\_exports">
+    </div>
+    <div class="mbc-sel">
+      <span class="mbc-lab" title="面板里改这个就会停用自动补 GTNH 目录">备份内容</span>
+      <input id="mbc-include" style="flex:3" placeholder="world, config, serverutilities, journeymap …">
+    </div>
+    <div class="mbc-xtip">备份内容 = 这个实例里要备份哪些目录/文件（用逗号分隔，相对实例目录）。
+      GTNH 这类整合默认已带上 <code>serverutilities / journeymap / TCNodeTracker / visualprospecting / local / customnpcs</code>，目录不存在会自动跳过。</div>
+    <div id="mbc-tier-rows"></div>
+    <div class="mbc-actions">
+      <button class="mbc-primary" id="mbc-set-save">保存设置</button>
+      <button id="mbc-set-add">加一档</button>
+      <button id="mbc-set-default">恢复默认</button>
+    </div>
+    <div class="mbc-xtip">每档两列：<b>增量留几份</b> + <b>完整留几份</b>，<b>填 0 就是不存</b>
+      （默认给的就是线上在用的那套：10 分钟档 增量 6 / 完整 0 · 2 小时档 增量 1 / 完整 0）。<br>
+      时间直接选<b>分钟 / 小时 / 天</b>，不用自己换算成分钟。<br>
+      <b>增量</b>：最小那档按「最新 K 份」滚动；更粗的档按<b>自然时间段</b>各钉一份（1 小时档 = 每个整点那一小时留最早的一份，
+      2 小时档 = 每 2 小时一段留最早的一份），时间段一过锚点就固定，10 分钟档转多少圈都挤不掉它。<br>
+      <b>完整档</b>（点「全部保存」存出来的独立一份）：也按档位留，粗档锚点一定取自<b>更早、还没被占用</b>的时间段，
+      所以会拿到几份不同时间的完整档；某一档填 0 就是这一档不存完整档。<br>
+      间隔要大于等于上面的存档间隔，改了会立刻按新策略清一次旧快照。</div>
+  </div>
+
+  <!-- 左边选世界/玩家存档，右边选存档（快照） -->
+  <div class="mbc-block">
+    <span class="mbc-lab">目标</span>
+    <select id="mbc-target-sel" title="要操作的目标：整个存档 / 某个世界 / 某个玩家"></select>
+  </div>
+  <div class="mbc-block">
+    <span class="mbc-lab">存档</span>
+    <select id="mbc-snap-sel" title="要用的那一份快照"></select>
+  </div>
+  <div id="mbc-target-detail"></div>
+
+  <!-- 高级功能：默认收起。坐标/区块回档、删除存档、玩家数据转移都在这里面，日常只用上面的「选目标 → 还原」 -->
+  <div class="mbc-adv">
+    <button id="mbc-adv-btn" title="坐标 / 区块回档、删除存档、玩家数据转移">高级功能 ▸</button>
+    <div id="mbc-adv-body" style="display:none">
+  <div id="mbc-adv-target"></div>
+  <div class="mbc-xfer" id="mbc-xfer">
+    <div class="mbc-xtitle">
+      <button id="mbc-xfer-btn" title="把 A 玩家的存档整套给 B 玩家">玩家数据转移 ▸</button>
+    </div>
+    <div id="mbc-xfer-body" style="display:none">
+    <div class="mbc-sel">
+      <select id="mbc-x-src"></select>
+      <select id="mbc-x-from"></select>
+    </div>
+    <div class="mbc-sel">
+      <select id="mbc-x-dst"></select>
+      <button class="mbc-warn" id="mbc-x-go">执行转移</button>
+    </div>
+    <div class="mbc-xtip">会给目标玩家新建/覆盖 playerdata、stats、advancements；目标玩家原来的存档会先自动留一份</div>
+    </div>
+  </div>
+    </div>
+  </div>
+  <div class="mbc-hint" id="mbc-hint"></div>
+</div>
+
+<script>
+(function () {
+  // 下面这两个只在读不到状态文件时兜底；正常都从 mcbackup-status.json 里读，
+  // 这样这张卡片发给别人用（换机器、换 MCSM 目录）也不用改代码
+  // 正常都从 mcbackup-status.json 里读（引擎会把节点 ID 和队列路径写进去）；
+  // 这里故意留空，免得把某台机器的信息硬编码进卡片（发布到 GitHub 时也不带私货）
+  var DAEMON_ID_FALLBACK = '';
+  var QUEUE_ROOT_FALLBACK = '';
+  var HOST_UUID = 'global0001';                                  // 全局实例 = 操作宿主机文件
+  var STATUS_URL = '/upload_files/mcbackup-status.json';
+  var MAX_FULL_PATH = 255;   // Windows 路径上限 260（实测 258 能建、260 就废）；超了面板接口会「返回成功但文件没建出来」
+
+  var state = null;        // 状态 JSON
+  var curUuid = '';        // 当前选中的服务端
+  // 当前选中的目标：'a' 整个存档 / 'w:<世界名>' / 'p:<世界>|<玩家key>'
+  // 用名字而不是序号，列表一变（比如玩家上下线）选择也不会跳走
+  var tgtVal = '';
+  var selSnap = '';        // 当前选中的快照名
+  var xSrc = '', xFrom = '', xDst = '';   // 玩家转移的三个下拉
+  var exKind = 'save', exMode = 'all', saveKind = 'inc';   // 导出内容 / 玩家数据 / 保存方式，刷新时保持不变
+  var lastHist = null;                    // 最近一次查询到的区块历史（脚本写到静态 json 里）
+  var ui = { note: null, cx: '', cz: '' }; // 输入框里正在编辑的内容（防止 20 秒自动刷新把用户输入冲掉）
+  var timer = null;
+  var clockTimer = null;
+
+  function q(sel) { return document.querySelector(sel); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  // 队列文件名里带中文会顶到 Windows 路径长度上限，统一 base64url（脚本侧用 ConvertFrom-B64Url 还原）
+  function b64u(s) {
+    return btoa(unescape(encodeURIComponent(String(s)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  // ---- 面板接口（$axios 被 bind 过，直接当函数调用）----
+  function raw() {
+    var a = window.$axios || (window.$realWindow && window.$realWindow.$axios);
+    if (!a) { throw new Error('拿不到面板 axios（$axios 未注入）'); }
+    return a;
+  }
+  function req(cfg) {
+    var a = raw();
+    if (typeof a === 'function') { return a(cfg); }
+    if (a && typeof a.get === 'function') {
+      return cfg.method === 'post' ? a.post(cfg.url, cfg.data) : a.get(cfg.url, { params: cfg.params });
+    }
+    return Promise.reject(new Error('面板 axios 不可用'));
+  }
+  function touch(path) {
+    return req({ method: 'post', url: '/api/files/touch?daemonId=' + daemonId() + '&uuid=' + HOST_UUID, data: { target: path } });
+  }
+  function daemonId() { return (state && state.daemonId) || DAEMON_ID_FALLBACK; }
+  function queueRoot() { return (state && state.queueRoot) || QUEUE_ROOT_FALLBACK; }
+  function exportRoot() { return (state && state.exportRoot) || queueRoot(); }
+  function submit(fileName, tip) {
+    var inst = curInst();
+    if (!inst) { return; }
+    var root = queueRoot();
+    if (!root) {
+      q('#mbc-hint').textContent = '还没读到状态文件（队列路径为空）：先点「刷新」，或到插件目录跑一次 node mc-backup.js status';
+      return;
+    }
+    var fullLen = root.length + 1 + inst.uuid.length + 1 + fileName.length;
+    if (fullLen > MAX_FULL_PATH) {
+      q('#mbc-hint').textContent = '没提交：队列文件名太长（完整路径 ' + fullLen + ' 字符，Windows 上限 '
+        + MAX_FULL_PATH + '），世界路径/备注写短一点再试';
+      return;
+    }
+    q('#mbc-hint').textContent = '正在提交…';
+    touch(root + '\\' + inst.uuid + '\\' + fileName).then(function () {
+      q('#mbc-hint').textContent = '已提交（' + inst.name + ' · ' + tip + '），排队执行中…';
+      startProgressWatch(150);   // 队列最多 1 分钟才轮到，提交后先盯 150 秒
+      setTimeout(reload, 5000);
+    }).catch(function (e) {
+      q('#mbc-hint').textContent = '提交失败：' + (e && e.message ? e.message : e);
+    });
+  }
+
+  // ---- 读取状态文件（静态文件，不带 token，加时间戳防缓存）----
+  function loadStatus() {
+    return fetch(STATUS_URL + '?t=' + Date.now(), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); });
+  }
+
+  // ---- 进度条：引擎把当前任务进度写到状态文件旁边的 mcbackup-progress.json ----
+  var PROGRESS_URL = '/upload_files/mcbackup-progress.json';
+  var progTimer = null, progWatchUntil = 0, progDoneMark = '', progReloading = false;
+  function progressRunning(p) { var t = p && p.task; return !!(t && t !== 'idle' && t !== 'done'); }
+  function stopProgressWatch() { if (progTimer) { clearInterval(progTimer); progTimer = null; } }
+  // 提交任务后先盯一段时间：队列最多 1 分钟才执行，0.4 秒的增量任务也能被看到
+  function startProgressWatch(seconds) {
+    progWatchUntil = Math.max(progWatchUntil, Date.now() + (seconds || 150) * 1000);
+    pollProgress();
+    if (!progTimer) { progTimer = setInterval(function () { pollProgress(); }, 1500); }
+  }
+  function renderProgress(p) {
+    var box = q('#mbc-progress');
+    if (!box) { return; }
+    if (!p || !p.task || p.task === 'idle') {
+      box.style.display = 'none';
+      return;
+    }
+    box.style.display = '';
+    var finished = (p.task === 'done');
+    var pct = finished ? 100 : (p.percent || 0);
+    var txt = (p.instance ? '[' + p.instance + '] ' : '') + (p.message || p.task);
+    if (finished) {
+      txt = '✔ ' + txt;
+    } else {
+      if (p.total > 0) { txt += '　' + p.done + '/' + p.total + '（' + pct + '%）'; }
+      else if (p.done > 0) { txt += '　已处理 ' + p.done + ' 个文件'; }
+      txt += '　已用 ' + (p.seconds || 0) + ' 秒';
+    }
+    q('#mbc-progress-label').textContent = txt;
+    var fill = q('#mbc-progress-fill');
+    fill.style.width = (finished ? 100 : (p.total > 0 ? Math.max(2, pct) : 100)) + '%';
+    fill.className = 'mbc-progress-fill' + ((finished || (p.total > 0 && pct >= 100)) ? ' done' : '');
+  }
+  function pollProgress() {
+    return fetch(PROGRESS_URL + '?t=' + Date.now(), { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (p) {
+        renderProgress(p);
+        var running = progressRunning(p);
+        if (running) {
+          progWatchUntil = Math.max(progWatchUntil, Date.now() + 120000);   // 任务在跑就继续盯
+          if (!progTimer) { progTimer = setInterval(function () { pollProgress(); }, 1500); }
+          return;
+        }
+        // 完成态（绿色 100%）保留在界面上；每出现一次新完成就刷新一次列表，刷新不会自己套娃
+        var mark = (p && p.task === 'done') ? String(p.updatedAt || p.startedAt || '') : '';
+        if (mark && mark !== progDoneMark) {
+          progDoneMark = mark;
+          stopProgressWatch();
+          if (!progReloading) {
+            progReloading = true;
+            setTimeout(function () { progReloading = false; reload(); }, 400);
+          }
+          return;
+        }
+        if (Date.now() >= progWatchUntil) { stopProgressWatch(); }
+      })
+      .catch(function () { renderProgress(null); });
+  }
+
+  function curInst() {
+    var list = (state && state.instances) || [];
+    return list.filter(function (i) { return i.uuid === curUuid; })[0] || null;
+  }
+  function curWorlds() { var i = curInst(); return (i && i.worlds) || []; }
+  function curPlayers() { var i = curInst(); return (i && i.players) || []; }
+  function curTarget() {
+    var v = tgtVal || '';
+    if (v === 'a') { return { all: true, world: '(整个存档)' }; }
+    if (v.indexOf('w:') === 0) {
+      var wn = v.slice(2);
+      return curWorlds().filter(function (w) { return w.world === wn; })[0] || null;
+    }
+    if (v.indexOf('p:') === 0) {
+      var rest = v.slice(2), i = rest.indexOf('|');
+      var pw = rest.slice(0, i), pk = rest.slice(i + 1);
+      return curPlayers().filter(function (p) { return p.world === pw && p.key === pk; })[0] || null;
+    }
+    return null;
+  }
+  function isAllTarget(t) { return !!(t && t.all); }
+  function isPlayerTarget(t) { return !!(t && t.key !== undefined && t.regions === undefined); }
+  function playerLabel(p) { return (p.uuid || p.key) + '（' + (p.name || '名字未知') + '）'; }
+  // 下拉里用的短标签：名字优先（uuid 只留前 8 位），没名字就显示 uuid 前 8 位
+  function playerShort(p) {
+    var uid = String(p.uuid || p.key || '');
+    if (p.name) { return p.name + '（' + uid.substring(0, 8) + '…）'; }
+    return uid.substring(0, 8) + '…';
+  }
+  function snapBy(name) {
+    var all = (curInst() && curInst().snapshots) || [];
+    return all.filter(function (s) { return s.name === name; })[0] || { name: name, time: name, type: 'full' };
+  }
+  // 档位名字：10 → 「10 分钟档」，60 → 「1 小时档」，120 → 「2 小时档」
+  function tierLabel(min) {
+    var m = +min || 0;
+    return (m >= 60 && m % 60 === 0) ? (m / 60) + ' 小时档' : m + ' 分钟档';
+  }
+  // 时间下拉：直接按人话选（分钟 / 小时 / 天），不用自己拿分钟换算
+  var DUR_LIST = [1, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720,
+    1440, 2880, 4320, 7200, 10080, 20160, 43200];
+  function durLabel(m) {
+    m = +m;
+    if (m >= 1440 && m % 1440 === 0) { return (m / 1440) + ' 天'; }
+    if (m >= 60 && m % 60 === 0) { return (m / 60) + ' 小时'; }
+    if (m > 60) { return String(Math.round(m / 6) / 10) + ' 小时'; }
+    return m + ' 分钟';
+  }
+  function durOptionsHtml(cur) {
+    var has = cur !== '' && cur != null && +cur > 0;
+    var list = DUR_LIST.slice();
+    if (has && list.indexOf(+cur) < 0) { list.push(+cur); list.sort(function (a, b) { return a - b; }); }
+    return (has ? '' : '<option value="" selected>（选间隔）</option>')
+      + list.map(function (m) {
+          return '<option value="' + m + '"' + (+m === +cur ? ' selected' : '') + '>' + durLabel(m) + '</option>';
+        }).join('');
+  }
+  // 一份快照可能同时钉住 1 小时档和 2 小时档，标签上一起写出来
+  function snapTierText(s) {
+    if (!s) { return ''; }
+    var list = (s.tiers && s.tiers.length) ? s.tiers : [s.tier];
+    return list.filter(function (m) { return +m > 0; }).map(tierLabel).join(' + ');
+  }
+  function snapsOf(t) {
+    var all = (curInst() && curInst().snapshots) || [];
+    if (t && t.snaps && t.snaps.length) { return t.snaps.map(snapBy); }
+    return all.slice(0, 12);
+  }
+
+  function renderInstSelect() {
+    var sel = q('#mbc-inst');
+    var list = (state && state.instances) || [];
+    if (!list.length) { sel.innerHTML = '<option>没有服务端</option>'; return; }
+    if (!curUuid || !list.filter(function (i) { return i.uuid === curUuid; }).length) {
+      curUuid = (list.filter(function (i) { return i.enabled; })[0] || list[0]).uuid;
+    }
+    sel.innerHTML = list.map(function (i) {
+      var tag = i.enabled ? ('备份中 ' + i.count + ' 份') : '已停用';
+      return '<option value="' + esc(i.uuid) + '"' + (i.uuid === curUuid ? ' selected' : '') + '>'
+        + esc(i.name) + '（' + tag + '）</option>';
+    }).join('');
+    sel.title = (sel.options[sel.selectedIndex] || {}).text || '';
+  }
+
+  // ---- 设置面板：存档间隔 + 分档保留 ----
+  function currentScopeInst() {
+    var v = q('#mbc-scope') ? q('#mbc-scope').value : 'global';
+    if (!v || v === 'global') { return null; }
+    return ((state && state.instances) || []).filter(function (i) { return i.uuid === v; })[0] || null;
+  }
+  // 备份内容按片提交，避免小文件名顶到 Windows 260 路径上限
+  function submitInclude(who, text) {
+    var b64 = b64u(String(text).replace(/\s+/g, ' '));
+    var CH = 110, parts = [];
+    for (var i = 0; i < b64.length; i += CH) { parts.push(b64.substr(i, CH)); }
+    if (!parts.length) { parts = ['']; }
+    for (var k = 0; k < parts.length; k++) {
+      submit('setinc-' + who + '~' + k + '~' + parts.length + '~' + parts[k] + '.req',
+        '备份内容 ' + (k + 1) + '/' + parts.length);
+    }
+  }
+
+  function tierRowsHtml(tiers) {
+    return tiers.map(function (t) {
+      var has = t && (t.minutes || t.keep || t.full);
+      return '<div class="mbc-tier-row">每 <select class="mbc-dur mbc-t-min">' + durOptionsHtml(t && t.minutes ? t.minutes : '')
+        + '</select>：增量留 <input class="mbc-coord mbc-t-keep" value="' + (has && t.keep !== '' && t.keep != null ? t.keep : '')
+        + '"> 份 · 完整留 <input class="mbc-coord mbc-t-full" value="' + (has && t.full !== '' && t.full != null ? t.full : '')
+        + '"> 份 <button class="mbc-t-del" title="删掉这一档">删</button></div>';
+    }).join('');
+  }
+
+  function renderSettings(tiers, baseMinutes) {
+    var s = (state && state.settings) || {};
+    // 设置对象：全局 / 单个服务端
+    var sel = q('#mbc-scope');
+    var keepScope = sel.value || 'global';
+    var opts = [['global', '全局（所有服务端）']];
+    ((state && state.instances) || []).forEach(function (i) {
+      opts.push([i.uuid, i.name + '（' + (i.enabled ? '备份中' : '已停用') + '）']);
+    });
+    sel.innerHTML = opts.map(function (o) { return '<option value="' + esc(o[0]) + '">' + esc(o[1]) + '</option>'; }).join('');
+    sel.value = opts.filter(function (o) { return o[0] === keepScope; }).length ? keepScope : 'global';
+
+    var inst = currentScopeInst();
+    var inherited = inst && !(inst.ownInterval || inst.ownTiers || inst.ownInclude || inst.ownFullKeep);
+    q('#mbc-base-min').innerHTML = durOptionsHtml(inst ? inst.interval : (baseMinutes || s.baseMinutes || 10));
+    q('#mbc-backup-root').value = String((state && state.backupRoot) || '');
+    q('#mbc-export-root').value = String((state && state.exportRoot) || '');
+    q('#mbc-backup-root').disabled = !!inst;
+    q('#mbc-export-root').disabled = !!inst;
+    q('#mbc-include').value = (inst ? (inst.include || []) : (state && state.include) || []).join(', ');
+    q('#mbc-scope-reset').style.display = (inst && (inst.ownInterval || inst.ownTiers || inst.ownInclude || inst.ownFullKeep)) ? '' : 'none';
+    q('#mbc-scope-tip').textContent = inst
+      ? (inherited ? '「' + inst.name + '」当前跟随全局设置；改完保存就会给它单独生效（其它服务端不受影响）。存档位置/导出位置是全局的，单个不能改。'
+                   : '「' + inst.name + '」已经有单独设置。存档位置/导出位置是全局的，单个不能改。')
+      : '全局设置对所有服务端生效（单个服务端可以单独覆盖）。存档位置/导出位置只能全局改。';
+
+    var list = (inst ? inst.tiers : (tiers || s.tiers))
+      || [{ minutes: 10, keep: 6, full: 0 }, { minutes: 120, keep: 1, full: 0 }];   // 默认 = 线上在用的那套
+    // 显示时按间隔从小到大排（10 → 60 → 120），更好读
+    list = list.slice().sort(function (a, b) { return (a.minutes || 0) - (b.minutes || 0); });
+    // 末尾永远留一个空行，方便直接加新档
+    q('#mbc-tier-rows').innerHTML = tierRowsHtml(list.concat([{ minutes: '', keep: '', full: '' }]));
+    bindTierRows();
+  }
+
+  function bindTierRows() {
+    Array.prototype.forEach.call(document.querySelectorAll('#mbc-tier-rows .mbc-t-del'), function (b) {
+      b.addEventListener('click', function () {
+        var row = b.parentNode;
+        row.parentNode.removeChild(row);
+      });
+    });
+  }
+
+  function readTiers() {
+    var rows = document.querySelectorAll('#mbc-tier-rows .mbc-tier-row');
+    var out = [];
+    Array.prototype.forEach.call(rows, function (r) {
+      var m = r.querySelector('.mbc-t-min').value.trim();
+      var k = r.querySelector('.mbc-t-keep').value.trim();
+      var fEl = r.querySelector('.mbc-t-full');
+      var f = fEl ? fEl.value.trim() : '';
+      if (m === '' && k === '' && f === '') { return; }
+      out.push([m === '' ? 0 : parseInt(m, 10), k === '' ? 0 : parseInt(k, 10), f === '' ? 0 : parseInt(f, 10)]);
+    });
+    return out;
+  }
+
+  function saveSettings() {
+    var base = parseInt(q('#mbc-base-min').value.trim(), 10);
+    if (!(base >= 1 && base <= 1440)) { q('#mbc-hint').textContent = '存档间隔要填 1~1440 之间的整数（分钟）'; return; }
+    var inst = currentScopeInst();
+    var broot = q('#mbc-backup-root').value.trim(), eroot = q('#mbc-export-root').value.trim();
+    if (!inst) {   // 路径只在全局模式下校验/提交
+      if (!/^[A-Za-z]:\\/.test(broot)) { q('#mbc-hint').textContent = '存档位置要填完整路径，例如 E:\\MC\\_backups'; return; }
+      if (!/^[A-Za-z]:\\/.test(eroot)) { q('#mbc-hint').textContent = '导出位置要填完整路径，例如 E:\\MC\\_backups\\_exports'; return; }
+      if (broot.toLowerCase() === eroot.toLowerCase()) { q('#mbc-hint').textContent = '导出位置不能和存档位置一样'; return; }
+    }
+    var tiers = readTiers();
+    if (!tiers.length) { q('#mbc-hint').textContent = '至少要留一档'; return; }
+    for (var i = 0; i < tiers.length; i++) {
+      var m = tiers[i][0], k = tiers[i][1], fk = tiers[i][2];
+      if (!(m >= 1)) { q('#mbc-hint').textContent = '第 ' + (i + 1) + ' 档的间隔没填对（要填分钟数）'; return; }
+      if (!(k >= 0 && k <= 500)) { q('#mbc-hint').textContent = '第 ' + (i + 1) + ' 档的增量份数要填 0~500（0 = 这档不存增量）'; return; }
+      if (!(fk >= 0 && fk <= 500)) { q('#mbc-hint').textContent = '第 ' + (i + 1) + ' 档的完整份数要填 0~500（0 = 这档不存完整档）'; return; }
+      if (k === 0 && fk === 0) { q('#mbc-hint').textContent = '第 ' + (i + 1) + ' 档增量和完整都是 0，那这档没意义，至少留一个'; return; }
+      if (m < base) { q('#mbc-hint').textContent = '第 ' + (i + 1) + ' 档的间隔（' + m + ' 分钟）不能小于存档间隔（' + base + ' 分钟）'; return; }
+    }
+    var payload = inst
+      ? JSON.stringify({ d: inst.uuid, b: base, t: tiers })
+      : JSON.stringify({ b: base, t: tiers, r: broot, e: eroot });
+    var prev = inst ? (inst.interval + '|' + JSON.stringify(inst.tiers)) : JSON.stringify((state && state.settings) || {});
+    var incNow = q('#mbc-include').value.trim();
+    var incEff = String((inst ? (inst.include || []) : (state && state.include) || []).join(', '));
+    var incChanged = incNow.replace(/\s+/g, ' ').toLowerCase() !== incEff.toLowerCase();
+    if (incChanged && !incNow) { q('#mbc-hint').textContent = '「备份内容」不能留空（至少要有 world）'; return; }
+    var rootChanged = !inst && (broot.toLowerCase() !== String(state.backupRoot || '').toLowerCase());
+    var crossVolume = rootChanged && (broot.substring(0, 2).toLowerCase() !== String(state.backupRoot || '').substring(0, 2).toLowerCase());
+    if (!confirm('保存存档设置？\n设置对象：' + (inst ? ('只改「' + inst.name + '」') : '全局（所有服务端）')
+      + '\n存档间隔：每 ' + base + ' 分钟一次\n保留策略：'
+      + tiers.map(function (t) { return '每 ' + t[0] + ' 分钟：增量 ' + t[1] + ' 份 / 完整 ' + t[2] + ' 份'; }).join('，')
+      + (inst ? '' : '\n存档位置：' + broot + (rootChanged ? '（已改动，脚本会把现有快照搬过去）' : ''))
+      + (crossVolume ? '\n注意：换到别的盘时硬链接过不去，只会把最新一份完整快照搬过去，更早的要手动搬。' : '')
+      + (inst ? '' : '\n导出位置：' + eroot)
+      + (incChanged ? '\n备份内容：' + incNow : '')
+      + '\n会立刻按这个策略清理一次旧快照（不符合的会被删掉）。')) { return; }
+    submit('settings-' + b64u(payload) + '.req', inst ? (inst.name + ' 的存档设置') : '全局存档设置');
+    if (incChanged) {
+      submitInclude(inst ? inst.uuid : 'global', incNow);
+    }
+    (function poll(n) {
+      if (n <= 0) { return; }
+      setTimeout(function () {
+        loadStatus().then(function (j) {
+          state = j;
+          render();
+          var cur = currentScopeInst();
+          var nowVal = cur ? (cur.interval + '|' + JSON.stringify(cur.tiers)) : (JSON.stringify(j.settings || {}));
+          if (nowVal !== prev) {
+            renderSettings(j.settings.tiers, j.settings.baseMinutes);
+            var s2 = cur || j.settings || {};
+            var iv = cur ? cur.interval : s2.baseMinutes;
+            var tl = (cur ? cur.tiers : s2.tiers) || [];
+            q('#mbc-hint').textContent = '设置已生效（' + (cur ? cur.name : '全局') + '）：每 ' + iv + ' 分钟一次；'
+              + tl.map(function (t) { return '每 ' + t.minutes + ' 分钟 增量 ' + t.keep + ' / 完整 ' + (t.full || 0) + ' 份'; }).join('，');
+          } else { poll(n - 1); }
+        });
+      }, 5000);
+    })(12);
+  }
+
+  // 目标下拉：世界/维度 + 玩家存档
+  function renderTargetSel() {
+    var sel = q('#mbc-target-sel');
+    var worlds = curWorlds(), players = curPlayers();
+    var html = '<optgroup label="整个存档">'
+      + '<option value="a" title="整个服务端：所有世界 + 玩家数据 + 配置一起存档/回档">整个存档 · 全部世界 + 配置</option>'
+      + '</optgroup>';
+    if (worlds.length) {
+      html += '<optgroup label="世界 / 维度（' + worlds.length + ' 个）">' + worlds.map(function (w, i) {
+        var lab = '世界 · ' + w.world + (w.kind ? '（' + w.kind + '）' : '') + (w.note ? ' — ' + w.note : '');
+        return '<option value="w:' + esc(w.world) + '" title="' + esc(lab) + '">' + esc(lab) + '</option>';
+      }).join('') + '</optgroup>';
+    }
+    if (players.length) {
+      html += '<optgroup label="玩家存档（' + players.length + ' 个）">' + players.map(function (p, i) {
+        var lab = '玩家 · ' + playerLabel(p) + (p.world ? ' · ' + p.world : '');
+        return '<option value="p:' + esc(p.world) + '|' + esc(p.key) + '" title="' + esc(lab) + '">' + esc(lab) + '</option>';
+      }).join('') + '</optgroup>';
+    }
+    if (!html) { html = '<option value="">这个服务端还没有世界/玩家存档</option>'; }
+    sel.innerHTML = html;
+    // 保持原来的选择，没有就选第一个
+    var opts = sel.options, keep = -1;
+    for (var i = 0; i < opts.length; i++) { if (opts[i].value === tgtVal) { keep = i; break; } }
+    if (keep < 0) { tgtVal = (opts[0] && opts[0].value) || ''; }
+    sel.value = tgtVal;
+    sel.title = (sel.options[sel.selectedIndex] || {}).text || '';
+  }
+
+  // 存档下拉：这个目标在哪几份快照里有
+  function renderSnapSel() {
+    var sel = q('#mbc-snap-sel');
+    var list = snapsOf(curTarget());
+    if (!list.length) {
+      sel.innerHTML = '<option value="">最近还没有快照</option>';
+      selSnap = '';
+      return;
+    }
+    var names = list.map(function (s) { return s.name; });
+    if (names.indexOf(selSnap) < 0) { selSnap = names[0]; }
+    // 先按「手动 / 自动」分开，自动的再按「完整 / 增量」+时间段分档：
+    // 手动保存的单独一组（不进自动保存循环、不占自动时间段）；自动的完整档一组，增量按 10 分钟/1 小时/2 小时档
+    var manuals = list.filter(function (s) { return s.manual; });
+    var autos = list.filter(function (s) { return !s.manual; });
+    var fulls = autos.filter(function (s) { return s.type === 'full'; });
+    var incs = autos.filter(function (s) { return s.type !== 'full'; });
+    var groups = [];
+    if (manuals.length) {
+      groups.push({ label: '手动保存（' + manuals.length + ' 份，不参与自动轮转）', items: manuals, manual: true, tier: -1 });
+    }
+    var base = 0;
+    incs.forEach(function (s) { var t = +s.tier || 0; if (!base || t < base) { base = t; } });
+    incs.forEach(function (s) {
+      var t = +s.tier || base;
+      if (!groups.some(function (g) { return g.tier === t; })) { groups.push({ tier: t, items: [] }); }
+      groups.filter(function (g) { return g.tier === t; })[0].items.push(s);
+    });
+    // 注意别把「手动」那组也算成增量组，否则它的标题会被改写成「增量 · …」
+    var incGroups = groups.filter(function (g) { return !g.full && !g.manual; })
+      .sort(function (a, b) { return a.tier - b.tier; });
+    // 完整档也按时间段分：最近的 1 份一组，被 1 小时 / 2 小时档钉住的各一组
+    var fullBase = fulls.filter(function (s) { return !(+s.tier > 0); });
+    var fullTiers = {};
+    fulls.filter(function (s) { return +s.tier > 0; }).forEach(function (s) {
+      if (!fullTiers[s.tier]) { fullTiers[s.tier] = []; }
+      fullTiers[s.tier].push(s);
+    });
+    var fullGroups = [];
+    if (fullBase.length) {
+      fullGroups.push({ label: '完整存档（最近 ' + fullBase.length + ' 份，可单独拿走）', items: fullBase, full: true, tier: 0 });
+    }
+    Object.keys(fullTiers).map(Number).sort(function (a, b) { return a - b; }).forEach(function (t) {
+      fullGroups.push({ label: '完整 · ' + tierLabel(t) + '（' + fullTiers[t].length + ' 份）', items: fullTiers[t], full: true, tier: t });
+    });
+    incGroups.forEach(function (g) { g.label = '增量 · ' + tierLabel(g.tier) + '（' + g.items.length + ' 份）'; });
+    // groups 里已经有手动组和增量组了，这里要的最终顺序是：手动 → 完整 → 增量
+    groups = groups.filter(function (g) { return g.manual; }).concat(fullGroups).concat(incGroups);
+    sel.innerHTML = groups.map(function (g) {
+      var head = '<optgroup label="' + esc(g.label) + '">';
+      var body = g.items.map(function (s) {
+        var kind = s.manual
+          ? ('手动 · ' + (s.type === 'full' ? '完整一份' : '增量')
+             + (s.refreshedAt ? '（刷新于 ' + String(s.refreshedAt).slice(11, 16) + '）' : ''))
+          : (s.type === 'full'
+              ? ('完整 · ' + (+s.tier > 0 ? tierLabel(s.tier) : '最近一份'))
+              : ('增量 · ' + snapTierText(s)));
+        var lab = (s.time || s.name) + '（' + kind + '）';
+        return '<option value="' + esc(s.name) + '"' + (s.name === selSnap ? ' selected' : '') + '>' + esc(lab) + '</option>';
+      }).join('');
+      return head + body + '</optgroup>';
+    }).join('');
+    sel.value = selSnap;
+    sel.title = (sel.options[sel.selectedIndex] || {}).text || '';
+  }
+
+  // 选中目标后只显示这一个目标的信息 / 备注 / 回档
+  function renderTargetDetail() {
+    var box = q('#mbc-target-detail');
+    var t = curTarget();
+    if (!box) { return; }
+    if (!t) { box.innerHTML = ''; return; }
+    var snap = selSnap ? snapBy(selSnap) : null;
+    var snapTxt = snap
+      ? (snap.time + '（' + (snap.manual
+          ? ('手动 · ' + (snap.type === 'full' ? '完整一份' : '增量'))
+          : (snap.type === 'full'
+              ? ('完整 · ' + (+snap.tier > 0 ? tierLabel(snap.tier) : '最近一份'))
+              : ('增量 · ' + snapTierText(snap)))) + '）')
+      : '（没选存档）';
+
+    // 整个存档（所有世界 + 配置一起）
+    if (isAllTarget(t)) {
+      var inst = curInst(), worlds = curWorlds();
+      box.innerHTML =
+        '<div class="mbc-target-head"><span>整个存档 · ' + esc(inst.name) + '</span><span>全部 ' + worlds.length + ' 个世界</span></div>'
+        + '<div class="mbc-row"><span>包含</span><span>世界地形 + 玩家数据 + config / kubejs / 服务端配置等已登记内容</span></div>'
+        + '<div class="mbc-row"><span>世界</span><span>' + esc(worlds.map(function (w) { return w.world; }).join('、') || '（没扫到）') + '</span></div>'
+        + '<div class="mbc-row"><span>存档</span><span>' + esc(snapTxt) + '</span></div>'
+        + '<div class="mbc-row"><span>占用</span><span>这份快照 ' + (snap && snap.sizeMB !== undefined ? snap.sizeMB : '?') + ' MB · 实际总占用 ' + inst.totalMB + ' MB</span></div>'
+        + '<div class="mbc-row"><span>还原</span><span><button class="mbc-warn" id="mbc-all-restore">把整个存档还原到这个存档</button></span></div>'
+        + exportRowHtml(t);
+      q('#mbc-adv-target').innerHTML = deleteRowHtml();
+      q('#mbc-all-restore').addEventListener('click', function () {
+        if (!selSnap) { q('#mbc-hint').textContent = '先在右边选一份存档'; return; }
+        if (!confirm('把「' + inst.name + '」的整个存档回档到 ' + snapTxt + '？\n'
+          + '会覆盖全部 ' + worlds.length + ' 个世界 + 玩家数据 + 配置；先自动停服、把当前状态留一份，再还原并重新开服。')) { return; }
+        if (!confirm('再确认一次：这是整个服务端级别的回档，不是单个世界。确定继续？')) { return; }
+        submit('restore-' + selSnap + '.req', '整个存档回档到 ' + selSnap);
+      });
+      bindExport(t); bindDelete(t);
+      return;
+    }
+
+    if (isPlayerTarget(t)) {
+      box.innerHTML =
+        '<div class="mbc-target-head"><span>玩家 · ' + esc(t.name || t.key) + '</span><span>'
+          + (t.legacy ? '1.7.10 名字命名' : 'uuid 命名') + '</span></div>'
+        + '<div class="mbc-row"><span>存档 uuid</span><span>' + esc(t.uuid || t.key) + '</span></div>'
+        + '<div class="mbc-row"><span>所在世界</span><span>' + esc(t.world || '') + (t.worldKind ? '（' + esc(t.worldKind) + '）' : '') + '</span></div>'
+        + '<div class="mbc-row"><span>大小 / 变化</span><span>' + t.sizeKB + ' KB' + (t.mtime ? ' · ' + esc(t.mtime) : '') + '</span></div>'
+        + '<div class="mbc-row"><span>附带</span><span>stats ' + (t.stats ? '✓' : '×') + ' · advancements ' + (t.adv ? '✓' : '×') + '</span></div>'
+        + '<div class="mbc-row"><span>存档</span><span>' + esc(snapTxt) + '</span></div>'
+        + '<div class="mbc-row"><span>还原</span><span><button class="mbc-warn" id="mbc-player-restore">把这个玩家还原到这个存档</button></span></div>'
+        + exportRowHtml(t);
+      q('#mbc-adv-target').innerHTML = deleteRowHtml();
+
+      q('#mbc-player-restore').addEventListener('click', function () {
+        if (!selSnap) { q('#mbc-hint').textContent = '先在右边选一份存档'; return; }
+        if (!confirm('把「' + curInst().name + '」里玩家 ' + (t.name || t.uuid) + ' 的存档回档到 ' + snapTxt + '？\n'
+          + '会先自动停服、把当前存档留一份，再还原并重新开服。\n只动这个玩家的 playerdata / stats / advancements，不碰世界地形。')) { return; }
+        submit('restoreplayer-' + b64u(t.world) + '~' + b64u(t.key) + '~' + selSnap + '.req',
+          '回档玩家 ' + (t.name || t.key));
+      });
+      bindExport(t); bindDelete(t);
+      return;
+    }
+
+    box.innerHTML =
+      '<div class="mbc-target-head"><span>世界 · ' + esc(t.world) + '</span><span>' + esc(t.kind || '（未识别）') + '</span></div>'
+      + '<div class="mbc-row"><span>大小</span><span>' + t.regions + ' 个 region · ' + t.sizeMB + ' MB</span></div>'
+      + '<div class="mbc-row"><span>存档</span><span>' + esc(snapTxt) + '</span></div>'
+      + '<div class="mbc-row"><span>备注</span><span><input id="mbc-note-in" value="' + esc(ui.note !== null ? ui.note : (t.note || ''))
+        + '" placeholder="例如 玩家A的主世界" style="width:130px"> <button class="mbc-primary" id="mbc-note-save">保存备注</button></span></div>'
+      + '<div class="mbc-row"><span>还原</span><span><button class="mbc-warn" id="mbc-world-restore">把这个世界还原到这个存档</button></span></div>'
+      + exportRowHtml(t);
+    // 坐标 / 区块级别的操作、删除存档 → 高级功能区
+    q('#mbc-adv-target').innerHTML = deleteRowHtml()
+      + '<div class="mbc-row"><span>区块坐标</span><span>X <input class="mbc-coord" id="mbc-cx" value="' + esc(ui.cx)
+        + '" placeholder="方块X"> Z <input class="mbc-coord" id="mbc-cz" value="' + esc(ui.cz) + '" placeholder="方块Z"></span></div>'
+      + '<div class="mbc-row"><span>坐标操作</span><span>'
+        + '<button class="mbc-warn" id="mbc-chunk-restore">只还原这个区块</button> '
+        + '<button class="mbc-warn" id="mbc-region-restore">还原整个区域</button> '
+        + '<button id="mbc-chunk-find">查这个区块历史</button></span></div>'
+      + '<div class="mbc-xtip">坐标填游戏里 F3 看到的方块 X / Z（1 区块 = 16×16 方块，1 区域 = 32×32 区块）</div>'
+      + '<div id="mbc-chunk-hist"></div>';
+
+    q('#mbc-note-save').addEventListener('click', function () {
+      var note = q('#mbc-note-in').value.replace(/[~\/\\]/g, '_').substring(0, 40);
+      // 文件名总长要卡在 Windows 上限内（'note-' + '~' + '.req' 占 10 个字符，文件名留 200 以内）
+      var budget = 190 - b64u(t.world).length, cut = false;
+      while (note.length && b64u(note).length > budget) { note = note.slice(0, -1); cut = true; }
+      ui.note = null;
+      submit('note-' + b64u(t.world) + '~' + b64u(note) + '.req',
+        '保存备注 ' + t.world + ' = ' + (note || '(清除)') + (cut ? '（太长了，已自动截断）' : ''));
+    });
+    q('#mbc-note-in').addEventListener('input', function (e) { ui.note = e.target.value; });
+    q('#mbc-cx').addEventListener('input', function (e) { ui.cx = e.target.value; });
+    q('#mbc-cz').addEventListener('input', function (e) { ui.cz = e.target.value; });
+
+    q('#mbc-world-restore').addEventListener('click', function () {
+      if (!selSnap) { q('#mbc-hint').textContent = '先在右边选一份存档'; return; }
+      if (!confirm('把「' + curInst().name + '」的世界 ' + t.world + ' 回档到 ' + snapTxt + '？\n'
+        + '会先自动停服、把当前世界留一份，再还原并重新开服。')) { return; }
+      submit('restoreworld-' + b64u(t.world) + '~' + selSnap + '.req', '回档世界 ' + t.world);
+    });
+
+    // ---- 区块级回档（GTNH 大世界用：不想整个世界回档，只把一个区块/一个区域拉回去）----
+    function readCoords() {
+      var x = q('#mbc-cx').value.trim(), z = q('#mbc-cz').value.trim();
+      if (!/^-?\d+$/.test(x) || !/^-?\d+$/.test(z)) {
+        q('#mbc-hint').textContent = '坐标要填整数（游戏里 F3 看到的方块 X / Z，Z 可以是负数）';
+        return null;
+      }
+      ui.cx = x; ui.cz = z;
+      return { x: x, z: z };
+    }
+    q('#mbc-chunk-restore').addEventListener('click', function () {
+      var c = readCoords();
+      if (!c) { return; }
+      if (!selSnap) { q('#mbc-hint').textContent = '先在右边选一份存档'; return; }
+      var cx = Math.floor(c.x / 16), cz = Math.floor(c.z / 16);
+      if (!confirm('把「' + curInst().name + '」世界 ' + t.world + ' 里坐标 X=' + c.x + ' Z=' + c.z
+        + '（区块 ' + cx + ',' + cz + '）这一个区块回档到 ' + snapTxt + '？\n会先自动停服、把当前区域文件留一份，只替换这 16×16 方块。')) { return; }
+      submit('restorechunk-' + b64u(t.world) + '~' + c.x + '~' + c.z + '~' + selSnap + '.req',
+        '回档区块 (' + cx + ',' + cz + ')');
+    });
+    q('#mbc-region-restore').addEventListener('click', function () {
+      var c = readCoords();
+      if (!c) { return; }
+      if (!selSnap) { q('#mbc-hint').textContent = '先在右边选一份存档'; return; }
+      var cx = Math.floor(c.x / 16), cz = Math.floor(c.z / 16);
+      var rx = Math.floor(cx / 32), rz = Math.floor(cz / 32);
+      if (!confirm('把「' + curInst().name + '」世界 ' + t.world + ' 的区域文件 r.' + rx + '.' + rz + '.mca（32×32 区块）整个回档到 ' + snapTxt + '？\n'
+        + '范围比单区块大得多，会覆盖里面所有区块；停服后整份区域文件替换。')) { return; }
+      submit('restoreregion-' + b64u(t.world) + '~' + c.x + '~' + c.z + '~' + selSnap + '.req',
+        '回档区域 r.' + rx + '.' + rz + '.mca');
+    });
+    q('#mbc-chunk-find').addEventListener('click', function () {
+      var c = readCoords();
+      if (!c) { return; }
+      var prevGen = lastHist ? lastHist.generatedAt : '';
+      submit('findchunk-' + b64u(t.world) + '~' + c.x + '~' + c.z + '.req', '查区块 X=' + c.x + ' Z=' + c.z + ' 的历史');
+      (function poll(n) {
+        if (n <= 0) { return; }
+        setTimeout(function () {
+          loadChunkHist().then(function () {
+            if (lastHist && lastHist.generatedAt !== prevGen) {
+              renderChunkHist();
+              q('#mbc-hint').textContent = '区块历史已更新（' + (lastHist.rows || []).length + ' 条变化记录）';
+            } else { poll(n - 1); }
+          });
+        }, 5000);
+      })(12);   // 最多等 60 秒（队列每分钟跑一次）
+    });
+    renderChunkHist();
+    bindExport(t); bindDelete(t);
+  }
+
+  // ---- 区块历史（脚本写静态 json，卡片直接读）----
+  // ---- 导出：导出内容 + 玩家数据 两个下拉 ----
+  function exportRowHtml(t) {
+    var kinds = [];
+    if (isAllTarget(t)) {
+      kinds.push(['save', '整份存档（world + 配置）']);
+      kinds.push(['server', '整个服务端（含 mods + 存档）']);
+      kinds.push(['serverclean', '纯净服务端（不带存档 / 玩家）']);
+    } else if (isPlayerTarget(t)) {
+      kinds.push(['player', '只有这个玩家的存档']);
+      kinds.push(['save', '整份存档（world + 配置）']);
+      kinds.push(['server', '整个服务端（含 mods + 存档）']);
+      kinds.push(['serverclean', '纯净服务端（不带存档 / 玩家）']);
+    } else {
+      kinds.push(['world', '只有这个世界']);
+      kinds.push(['save', '整份存档（world + 配置）']);
+      kinds.push(['server', '整个服务端（含 mods + 存档）']);
+      kinds.push(['serverclean', '纯净服务端（不带存档 / 玩家）']);
+    }
+    var pd = [['all', '玩家数据：全都带上'], ['none', '玩家数据：不要']];
+    if (isPlayerTarget(t)) { pd.push(['one', '玩家数据：只带 ' + (t.name || playerShort(t))]); }
+    // 记住上次选的，刷新时不弹回默认（选项不存在时才回退到第一项）
+    if (!kinds.filter(function (k) { return k[0] === exKind; }).length) { exKind = kinds[0][0]; }
+    if (!pd.filter(function (k) { return k[0] === exMode; }).length) { exMode = 'all'; }
+    // 整行大下拉，避免选项文字被挤掉
+    return '<div class="mbc-block"><span class="mbc-lab">导出</span>'
+      + '<select id="mbc-export-kind" title="导出的内容">' + kinds.map(function (k) {
+          return '<option value="' + k[0] + '"' + (k[0] === exKind ? ' selected' : '') + '>' + esc(k[1]) + '</option>'; }).join('') + '</select>'
+      + '<select id="mbc-export-pdata" title="导出时带不带玩家数据">' + pd.map(function (k) {
+          return '<option value="' + k[0] + '"' + (k[0] === exMode ? ' selected' : '') + '>' + esc(k[1]) + '</option>'; }).join('') + '</select>'
+      + '<button class="mbc-warn" id="mbc-export-go">导出</button>'
+      + '<div class="mbc-hint mbc-wide" id="mbc-export-tip"></div></div>';
+  }
+
+  // 删除某一份存档（卡片上要二次确认）
+  function deleteRowHtml() {
+    return '<div class="mbc-block"><span class="mbc-lab">删除</span>'
+      + '<button class="mbc-danger" id="mbc-del-snap">删除选中的这份存档</button>'
+      + '<div class="mbc-hint mbc-wide">会弹两次确认；删掉后这一时间点就回不来了（其它快照不受影响）</div></div>';
+  }
+
+  function bindDelete(t) {
+    var btn = q('#mbc-del-snap');
+    if (!btn) { return; }
+    btn.addEventListener('click', function () {
+      var inst = curInst();
+      if (!inst) { return; }
+      if (!selSnap) { q('#mbc-hint').textContent = '先在「存档」下拉里选一份要删的快照'; return; }
+      var snap = snapBy(selSnap);
+      var tag = (snap && snap.type === 'full') ? '完整' : '增量';
+      var sizeTxt = (snap && snap.deltaMB !== undefined) ? (snap.deltaMB + ' MB') : (snap && snap.sizeMB ? snap.sizeMB + ' MB' : '未知');
+      if (!confirm('删除「' + inst.name + '」的这份存档？\n快照：' + selSnap + '\n时间：' + (snap ? snap.time : '') + '（' + tag + '，这次实际占 ' + sizeTxt + '）\n'
+        + '被其它快照硬链接复用的数据不会跟着消失，所以省下的空间可能比这个数字小。')) { return; }
+      if (!confirm('再确认一次：永久删除快照 ' + selSnap + ' ？\n这个操作不可恢复，删掉以后就不能回档到那个时间点了。')) { return; }
+      submit('delsnap-' + selSnap + '.req', '删除存档 ' + selSnap);
+      setTimeout(function () { loadStatus().then(function (j) { state = j; render(); }); }, 8000);
+    });
+  }
+
+  function bindExport(t) {
+    var go = q('#mbc-export-go');
+    if (!go) { return; }
+    var kindSel = q('#mbc-export-kind'), pdSel = q('#mbc-export-pdata');
+    function sync() {
+      // 只有「整份存档 / 只有这个世界」才谈得上玩家数据（整个服务端本来就是全的）
+      var showPd = (kindSel.value === 'save' || kindSel.value === 'world');
+      exKind = kindSel.value;
+      if (showPd) { exMode = pdSel.value; }
+      pdSel.disabled = !showPd;
+      if (!showPd) { pdSel.value = 'all'; }
+      q('#mbc-export-tip').textContent = '导出到 ' + exportRoot() + '（复制一份，不动线上）'
+        + (kindSel.value === 'server' ? '　·　整个服务端 = 实例目录整份（不含它自己的 backups）' : '')
+        + (kindSel.value === 'serverclean' ? '　·　纯净服务端 = 不带存档 / 日志 / 玩家身份文件' : '');
+    }
+    kindSel.addEventListener('change', sync);
+    pdSel.addEventListener('change', sync);
+    sync();
+    go.addEventListener('click', function () {
+      var kind = kindSel.value, mode = pdSel.value;
+      var key = (mode === 'one' && isPlayerTarget(t)) ? t.key : '';
+      var snap = selSnap, name = '', label = '';
+      if (kind === 'server') {
+        name = 'exportserver.req';
+        label = '整个服务端（含 mods + 存档）';
+      } else if (kind === 'serverclean') {
+        name = 'exportserver-clean.req';
+        label = '纯净服务端（不带存档 / 玩家数据）';
+      } else {
+        if (!snap) { q('#mbc-hint').textContent = '先在右边选一份存档'; return; }
+        if (kind === 'player') {
+          name = 'exportplayer-' + b64u(t.world) + '~' + b64u(t.key) + '~' + snap + '.req';
+          label = '玩家 ' + (t.name || t.key) + ' 的存档';
+        } else if (kind === 'world') {
+          name = 'exportworld-' + b64u(t.world) + '~' + snap + '~' + mode + (key ? '~' + b64u(key) : '') + '.req';
+          label = '世界 ' + t.world;
+        } else {
+          name = 'exportsave-' + snap + '~' + mode + (key ? '~' + b64u(key) : '') + '.req';
+          label = '整份存档';
+        }
+      }
+      var modeTxt = (kind === 'server' || kind === 'serverclean') ? '' : ('（' + ({ all: '带全部玩家数据', none: '不带玩家数据', one: '只带玩家 ' + key }[mode] || '') + '）');
+      if (!confirm('导出「' + curInst().name + '」的 ' + label + modeTxt + '？\n'
+        + ((kind === 'server' || kind === 'serverclean') ? '来源：线上实例目录' : '来源：快照 ' + snap) + '\n'
+        + '导出到：' + exportRoot() + '\\...\n导出只是复制一份，不动线上；大存档可能要几分钟。')) { return; }
+      submit(name, '导出 ' + label);
+    });
+  }
+
+  function loadChunkHist() {
+    var inst = curInst(), t = curTarget();
+    if (!inst || !t || isPlayerTarget(t)) { lastHist = null; return Promise.resolve(); }
+    return fetch('/upload_files/mcchunk-history-' + inst.uuid + '.json?t=' + Date.now(), { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { lastHist = j; })
+      .catch(function () { lastHist = null; });
+  }
+
+  function renderChunkHist() {
+    var box = q('#mbc-chunk-hist');
+    var t = curTarget(), inst = curInst();
+    if (!box) { return; }
+    if (!lastHist || !t || !inst || isPlayerTarget(t)
+      || lastHist.instanceUuid !== inst.uuid || lastHist.world !== t.world) { box.innerHTML = ''; return; }
+    var rows = lastHist.rows || [];
+    box.innerHTML = '<div class="mbc-chline"><span class="mbc-dim">最近查的区块：</span>X=' + lastHist.blockX + ' Z=' + lastHist.blockZ
+      + ' → 区块 (' + lastHist.chunkX + ',' + lastHist.chunkZ + ') · ' + esc(lastHist.regionFile)
+      + ' · 共 ' + lastHist.snapshotCount + ' 份快照，只列变化点 <span class="mbc-dim">（' + esc(String(lastHist.generatedAt).replace('T', ' ')) + '）</span></div>'
+      + (rows.length ? rows.map(function (r) {
+          return '<div class="mbc-chrow"><span>' + esc(r.time) + '</span><span>'
+            + (r.exists ? ('存在 ' + r.size + ' 字节 · ' + esc(r.hash)) : '<span class="mbc-dim">不存在（当时未生成）</span>')
+            + '</span></div>';
+        }).join('') : '<div class="mbc-chrow"><span>—</span><span>这个区块没有变化记录</span></div>');
+  }
+
+  // 玩家数据转移：来源玩家 + 来源数据（线上/某份快照）+ 目标玩家
+  // 整块默认收起，只留一个「玩家数据转移」按钮，点开才显示（平时不占地方）
+  function setXferOpen(open) {
+    var body = q('#mbc-xfer-body'), btn = q('#mbc-xfer-btn');
+    if (body) { body.style.display = open ? '' : 'none'; }
+    if (btn) { btn.textContent = '玩家数据转移 ' + (open ? '▾' : '▸'); }
+  }
+  // 高级功能区：默认收起（坐标/区块回档、删除存档、玩家数据转移都在里面）
+  function setAdvOpen(open) {
+    var body = q('#mbc-adv-body'), btn = q('#mbc-adv-btn');
+    if (body) { body.style.display = open ? '' : 'none'; }
+    if (btn) { btn.textContent = '高级功能 ' + (open ? '▾' : '▸'); }
+  }
+  function renderXfer() {
+    var box = q('#mbc-xfer');
+    var players = curPlayers();
+    if (!players.length) { box.style.display = 'none'; return; }
+    box.style.display = '';
+    var xbody = q('#mbc-xfer-body');
+    if (q('#mbc-xfer-btn')) { q('#mbc-xfer-btn').textContent = '玩家数据转移 ' + (xbody.style.display !== 'none' ? '▾' : '▸'); }
+
+    var src = q('#mbc-x-src'), from = q('#mbc-x-from'), dst = q('#mbc-x-dst');
+    if (!players.filter(function (p) { return p.key === xSrc; }).length) { xSrc = players[0].key; }
+    src.innerHTML = players.map(function (p) {
+      return '<option value="' + esc(p.key) + '">来源：' + esc(playerShort(p)) + '</option>';
+    }).join('');
+    src.value = xSrc;
+
+    var sp = players.filter(function (p) { return p.key === xSrc; })[0] || players[0];
+    var fromHtml = ['<option value="live">数据：线上当前</option>'].concat(
+      (sp.snaps || []).slice(0, 12).map(function (n) {
+        var s = snapBy(n);
+        return '<option value="' + esc(n) + '">数据：' + esc(s.time || n) + ' 的快照</option>';
+      })).join('');
+    if (!(sp.snaps || []).filter(function (n) { return n === xFrom; }).length) { xFrom = 'live'; }
+    from.innerHTML = fromHtml;
+    from.value = xFrom;
+
+    var dstOpts = players.map(function (p) {
+      return '<option value="' + esc(p.key) + '">给：' + esc(playerShort(p)) + '</option>';
+    });
+    dstOpts.push('<option value="__manual__">给：手动输入名字/UUID…</option>');
+    if (xDst !== '__manual__' && !players.filter(function (p) { return p.key === xDst; }).length) { xDst = players[0].key; }
+    dst.innerHTML = dstOpts.join('');
+    dst.value = xDst;
+  }
+
+  function render() {
+    var inst = curInst();
+    if (!inst) { q('#mbc-sum').textContent = '没有可显示的服务端'; return; }
+    // 保存方式下拉：保持上次选的
+    if (saveKind && q('#mbc-snap-kind')) { q('#mbc-snap-kind').value = saveKind; }
+    q('#mbc-toggle').textContent = inst.enabled ? '停止备份' : '开启备份';
+    q('#mbc-toggle').className = inst.enabled ? 'mbc-warn' : '';
+    q('#mbc-sum').innerHTML = (inst.enabled ? '' : '<span class="mbc-off">[已停用] </span>')
+      + '共 ' + inst.count + ' 份（完整 ' + inst.fulls + ' / 增量 ' + inst.incs + '）'
+      + (inst.latestTime ? '，最新 ' + esc(inst.latestTime) : '')
+      + (inst.lastSeconds ? '，上次 ' + inst.lastSeconds + ' 秒/' + inst.lastFiles + ' 个文件' : '')
+      + '，占用 ' + inst.totalMB + ' MB'
+      + (state.pending ? '，待处理请求 ' + state.pending + ' 个' : '');
+    var st = state.settings;
+    // 下次自动存档时间（引擎按系统整刻算好写进状态里的）
+    if (inst.nextSaveAt) {
+      q('#mbc-sum').innerHTML += '<div class="mbc-dim" style="font-size:12px">下次自动保存 <b>' + esc(inst.nextSaveAt)
+        + '</b>（每 ' + durLabel(inst.interval) + ' 一次，按系统时间对齐到整刻）'
+        + (state.serverTime ? ' · 状态时间 ' + esc(String(state.serverTime).slice(11, 19)) : '') + '</div>';
+    }
+    if (inst.manualCount) {
+      q('#mbc-sum').innerHTML += '<div class="mbc-dim" style="font-size:12px">手动保存 ' + inst.manualCount
+        + ' 份（最多留 ' + (inst.manualKeep || 20) + ' 份；不进自动保存循环，也不会被自动轮转清掉）'
+        + '　· 点「增量保存」是把变化写进最近那份手动档，不会多出一份</div>';
+    }
+    if (st && st.tiers && st.tiers.length) {
+      q('#mbc-sum').innerHTML += '<div class="mbc-dim" style="font-size:12px">保留策略：每 ' + st.baseMinutes + ' 分钟存一次 · '
+        + st.tiers.slice().sort(function (a, b) { return a.minutes - b.minutes; })
+            .map(function (t) { return tierLabel(t.minutes) + ' 增量 ' + t.keep + ' / 完整 ' + (t.full || 0); }).join(' · ')
+        + '（0 = 不存）</div>';
+    }
+    if (inst.slow) {
+      q('#mbc-sum').innerHTML += '<div class="mbc-off" style="font-size:12px">⚠ 单次快照已经超过存档间隔的一半，'
+        + '建议把「设置」里的存档间隔调大（例如 30 分钟），避免挤掉下一次快照</div>';
+    }
+    renderTargetSel();
+    renderSnapSel();
+    renderTargetDetail();
+    renderXfer();
+  }
+
+  function reload() {
+    return loadStatus().then(function (j) {
+      state = j;
+      renderInstSelect();
+      render();
+      return loadChunkHist();
+    }).then(function () {
+      renderChunkHist();
+      return pollProgress();
+    }).catch(function (e) {
+      q('#mbc-sum').textContent = '读取失败：' + (e && e.message ? e.message : e);
+    });
+  }
+
+  function boot() {
+    try {
+      q('#mbc-refresh').addEventListener('click', function () { reload(); });
+      // 设置面板
+      q('#mbc-settings-btn').addEventListener('click', function () {
+        var box = q('#mbc-settings');
+        var toOpen = (box.style.display === 'none');
+        box.style.display = toOpen ? '' : 'none';
+        q('#mbc-settings-btn').textContent = toOpen ? '收起设置' : '设置';
+        if (toOpen) { renderSettings(); }
+      });
+      // 玩家数据转移：默认收起，点按钮才展开
+      q('#mbc-xfer-btn').addEventListener('click', function () {
+        var body = q('#mbc-xfer-body');
+        setXferOpen(body.style.display === 'none');
+      });
+      // 高级功能：默认收起
+      q('#mbc-adv-btn').addEventListener('click', function () {
+        var body = q('#mbc-adv-body');
+        setAdvOpen(body.style.display === 'none');
+      });
+      q('#mbc-set-add').addEventListener('click', function () {
+        q('#mbc-tier-rows').insertAdjacentHTML('beforeend', tierRowsHtml([{ minutes: '', keep: '' }]));
+        bindTierRows();
+      });
+      q('#mbc-set-default').addEventListener('click', function () {
+        renderSettings([{ minutes: 10, keep: 6 }, { minutes: 60, keep: 2 }, { minutes: 120, keep: 2 }], 10);
+      });
+      // 换设置对象（全局 / 单个服务端）：字段跟着换一套
+      q('#mbc-scope').addEventListener('change', function () { renderSettings(); });
+      // 单个服务端改回「跟随全局」
+      q('#mbc-scope-reset').addEventListener('click', function () {
+        var inst = currentScopeInst();
+        if (!inst) { return; }
+        if (!confirm('把「' + inst.name + '」的存档间隔 / 分档 / 备份内容都改回跟随全局？（它自己的单独设置会被清掉）')) { return; }
+        submit('settings-' + b64u(JSON.stringify({ d: inst.uuid, x: 1 })) + '.req', inst.name + ' 改回跟随全局');
+        setTimeout(function () { loadStatus().then(function (j) { state = j; renderSettings(); }); }, 6000);
+      });
+      q('#mbc-set-save').addEventListener('click', saveSettings);
+      q('#mbc-inst').addEventListener('change', function (e) {
+        curUuid = e.target.value; tgtVal = ''; selSnap = ''; xSrc = ''; xDst = ''; xFrom = '';
+        ui = { note: null, cx: '', cz: '' }; lastHist = null; render();
+      });
+      q('#mbc-target-sel').addEventListener('change', function (e) {
+        tgtVal = e.target.value; selSnap = '';
+        ui = { note: null, cx: '', cz: '' };
+        renderSnapSel(); renderTargetDetail();
+      });
+      q('#mbc-snap-sel').addEventListener('change', function (e) {
+        selSnap = e.target.value; renderTargetDetail();
+      });
+      // 保存方式下拉：选完就记住（不然 20 秒自动刷新会把选择弹回默认）
+      q('#mbc-snap-kind').addEventListener('change', function (e) { saveKind = e.target.value; });
+      q('#mbc-snap').addEventListener('click', function () {
+        // 「保存」有两种：增量（把变化写进最近那份手动档）/ 全部（另起一份独立完整复制）
+        var kind = q('#mbc-snap-kind').value;
+        saveKind = kind;
+        var before = curInst() ? (curInst().latest + '|' + curInst().count) : '';
+        if (kind === 'full') {
+          var inst = curInst();
+          var est = inst && inst.latest ? (snapBy(inst.latest).sizeMB || '?') : '?';
+          // 当前设置里所有档的「完整留」都是 0 → 存完就会被保留策略清掉，先提醒一句
+          var fullCap = ((inst && inst.tiers) || []).reduce(function (a, t) { return a + (+t.full || 0); }, 0);
+          if (!confirm('「全部保存」会把整个存档完整复制一份（约 ' + est + ' MB，比增量慢、也更费盘）。\n'
+            + '好处是这一份是独立的，可以单独拿走，不依赖其它快照的硬链接。\n'
+            + '它会作为「完整档」按你在设置里那张档位表的「完整留 N 份」保留，不参与增量的时间段轮转。\n'
+            + (fullCap ? ('目前各档完整份数合计 ' + fullCap + ' 份。\n')
+                       : '⚠ 注意：现在各档的「完整留」都是 0 份，这份完整档存完会被保留策略立刻清掉；'
+                         + '想留住就把设置里某一档的完整份数改成 1。\n')
+            + '确定现在做一次完整保存？')) { return; }
+          submit('snapshot-full.req', '全部保存（完整一份）');
+        } else {
+          var minst = curInst();
+          var mcount = (minst && minst.manualCount) || 0;
+          submit('snapshot.req', '增量保存（' + (mcount ? '刷新最近那份手动档' : '还没有手动档，先建一份') + '）');
+        }
+        // 队列最多 1 分钟执行一次，等结果出来直接告诉你（份数可能不变：分档保留会同时清掉旧快照）
+        (function poll(n) {
+          if (n <= 0) { return; }
+          setTimeout(function () {
+            loadStatus().then(function (j) {
+              state = j; render();
+              var now = curInst();
+              if (now && (now.latest + '|' + now.count) !== before) {
+                var t = now.lastType === 'full' ? '完整' : '增量';
+                q('#mbc-hint').textContent = '已存档：' + now.latestTime + '（' + t + '，新写入 ' + now.lastCopied
+                  + ' 个文件；现在共 ' + now.count + ' 份，完整 ' + now.fulls + ' / 增量 ' + now.incs + '）';
+              } else { poll(n - 1); }
+            });
+          }, 5000);
+        })(13);
+      });
+      q('#mbc-toggle').addEventListener('click', function () {
+        var inst = curInst();
+        if (!inst) { return; }
+        if (inst.enabled) {
+          if (confirm('停止对「' + inst.name + '」的自动备份？（已有快照不会被删除）')) { submit('disable.req', '停止备份'); }
+        } else if (confirm('开启对「' + inst.name + '」的自动备份？')) { submit('enable.req', '开启备份'); }
+      });
+      q('#mbc-restore-latest').addEventListener('click', function () {
+        var inst = curInst();
+        if (!inst) { return; }
+        if (confirm('把「' + inst.name + '」整个回档到最新快照？会先自动停服、备份当前状态，再还原并重新开服。')) { submit('restore-latest.req', '回档到最新'); }
+      });
+      // 玩家转移
+      q('#mbc-x-src').addEventListener('change', function (e) { xSrc = e.target.value; xFrom = ''; renderXfer(); });
+      q('#mbc-x-from').addEventListener('change', function (e) { xFrom = e.target.value; });
+      q('#mbc-x-dst').addEventListener('change', function (e) { xDst = e.target.value; });
+      q('#mbc-x-go').addEventListener('click', function () {
+        var players = curPlayers();
+        var sp = players.filter(function (p) { return p.key === xSrc; })[0];
+        if (!sp) { return; }
+        var dk = xDst, dn = '';
+        if (xDst === '__manual__') {
+          var v = prompt('输入目标玩家的名字或 UUID（没上过线的新玩家也行）', '');
+          if (!v) { return; }
+          dk = v.trim(); dn = dk;
+        } else {
+          var dp = players.filter(function (p) { return p.key === xDst; })[0];
+          if (!dp) { return; }
+          dn = dp.name || dp.key;
+        }
+        if (dk === sp.key) { q('#mbc-hint').textContent = '来源和目标不能是同一个玩家'; return; }
+        var fromTxt = xFrom === 'live' ? '线上当前数据' : ('快照 ' + xFrom);
+        if (!confirm('把「' + curInst().name + '」世界 ' + sp.world + ' 里 ' + (sp.name || sp.key) + ' 的存档（' + fromTxt + '）整套给 '
+          + dn + '？\n会先自动停服、把目标玩家原来的存档留一份，再覆盖 playerdata / stats / advancements。')) { return; }
+        submit('xferplayer-' + b64u(sp.world) + '~' + b64u(sp.key) + '~' + b64u(dk) + '~' + (xFrom || 'live') + '.req',
+          '把 ' + (sp.name || sp.key) + ' 的存档给 ' + dn);
+      });
+      reload();
+      timer = setInterval(reload, 20000);
+      // 卡片右上角显示本机（面板所在电脑）的系统时间，每秒走一次：方便对照"下次自动保存"到点没有
+      (function tickClock() {
+        if (q('#mbc-clock')) { q('#mbc-clock').textContent = '系统时间 ' + new Date().toLocaleTimeString('sv-SE'); }
+        clockTimer = setTimeout(tickClock, 1000);
+      })();
+    } catch (e) {
+      q('#mbc-sum').textContent = '卡片初始化失败：' + (e && e.message ? e.message : e);
+    }
+  }
+
+  if (typeof window.$onMounted === 'function') { window.$onMounted(boot); } else { boot(); }
+  if (typeof window.$onUnmounted === 'function') {
+    window.$onUnmounted(function () {
+      if (timer) { clearInterval(timer); timer = null; }
+      if (clockTimer) { clearTimeout(clockTimer); clockTimer = null; }
+    });
+  }
+})();
+</script>

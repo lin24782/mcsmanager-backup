@@ -1,0 +1,36 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: ['18', '20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 沙盒全功能测试（真实引擎 + 假 GTNH 服务端）
+        run: node tests/sandbox-test.js
+
+      - name: 手动档 / 自动档 链路与保留策略
+        run: node tests/chain-test.js
+
+      - name: 卡片脚本（假 DOM）
+        run: node tests/card-test.js
+
+      - name: 时间段锚点对比
+        run: node tests/retention-test.js

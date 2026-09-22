@@ -1,0 +1,69 @@
+{
+    "panelUrl":  "http://127.0.0.1:23333",
+    "panelDir":  "",
+    "panelUser":  "面板用户名",
+    "panelPass":  "面板密码",
+    "daemonId":  "（可选，留空会自动从面板取）",
+    "backupRoot":  "E:\\MC\\_backups",
+    "statusFile":  "E:\\MCSM\\web\\public\\upload_files\\mcbackup-status.json",
+    "exportRoot":  "E:\\MC\\_backups\\_exports",
+    "baseMinutes":  10,
+    "manualKeep":  20,
+    "minFreeGB":  20,
+    "hardlinkDeltas":  true,
+    "saveAllBeforeSnapshot":  true,
+    "saveAllWaitSeconds":  6,
+    "excludeFileNames":  [
+                             "session.lock"
+                         ],
+    "include":  [
+                    "world",
+                    "config",
+                    "kubejs",
+                    "defaultconfigs",
+                    "server.properties",
+                    "ops.json",
+                    "whitelist.json",
+                    "banned-ips.json",
+                    "banned-players.json",
+                    "usercache.json",
+                    "usernamecache.json",
+                    "user_jvm_args.txt",
+                    "serverutilities",
+                    "journeymap",
+                    "TCNodeTracker",
+                    "visualprospecting",
+                    "local",
+                    "customnpcs",
+                    "java9args.txt",
+                    "startserver-java9.bat",
+                    "startserver-java9.sh",
+                    "startserver.bat",
+                    "startserver.sh",
+                    "server-icon.png",
+                    "eula.txt"
+                ],
+    "tiers":  [
+                  {
+                      "minutes":  10,
+                      "keep":  6,
+                      "full":  0
+                  },
+                  {
+                      "minutes":  120,
+                      "keep":  1,
+                      "full":  0
+                  }
+              ],
+    "instances":  [
+                      {
+                          "uuid":  "实例 uuid（面板实例列表里看）",
+                          "name":  "mc-1",
+                          "dir":  "E:\\MC\\\u003cuuid\u003e",
+                          "enabled":  true,
+                          "notes":  {
+
+                                    }
+                      }
+                  ]
+}
